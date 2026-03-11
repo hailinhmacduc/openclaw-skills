@@ -80,17 +80,79 @@ EXTRACT_POST_JS = """(el) => {
 
     // --- Post URL ---
     let postUrl = '';
+
+    // Helper: check if a resolved href looks like a post permalink (not comment/photo/profile)
+    const isPostLink = (h) => {
+        if (!h) return false;
+        if (!h.includes('facebook.com')) return false;
+        const bad = ['comment_id', '/photo/', '/photos/', '/profile.php', '/user/', 'refsrc=', 'action='];
+        if (bad.some(b => h.includes(b))) return false;
+        return h.includes('/posts/') || h.includes('/permalink/') || h.includes('story_fbid');
+    };
+
+    // Pass 1: primary selectors (specific patterns in href attribute)
     const postLinks = el.querySelectorAll(
         'a[href*="/posts/"], a[href*="/permalink/"], a[href*="story_fbid"]'
     );
     for (const pl of postLinks) {
-        const href = pl.getAttribute('href');
+        const href = pl.getAttribute('href') || '';
         if (href && !href.includes('comment_id')) {
             postUrl = pl.href;
             break;
         }
     }
-    if (!postUrl && postLinks.length > 0) postUrl = postLinks[0].href;
+
+    // Pass 2: fallback — scan ALL anchors, filter by resolved href
+    if (!postUrl) {
+        for (const a of el.querySelectorAll('a[href]')) {
+            if (isPostLink(a.href)) {
+                postUrl = a.href;
+                break;
+            }
+        }
+    }
+
+    // Pass 3: timestamp link fallback — Facebook timestamp always links to post permalink
+    // Timestamp <a> tags typically have aria-label with relative time or wrap a <abbr>/<time>
+    if (!postUrl) {
+        const timeSelectors = [
+            'a[aria-label*="giờ"]', 'a[aria-label*="phút"]', 'a[aria-label*="ngày"]',
+            'a[aria-label*="tuần"]', 'a[aria-label*="tháng"]',
+            'a[aria-label*="hour"]', 'a[aria-label*="minute"]', 'a[aria-label*="day"]',
+            'a[aria-label*="week"]', 'a[aria-label*="month"]',
+            'a abbr[title]',
+        ];
+        for (const sel of timeSelectors) {
+            const el2 = sel.endsWith(']') && sel.includes(' ')
+                ? el.querySelector(sel)?.closest('a')
+                : el.querySelector(sel);
+            if (el2 && isPostLink(el2.href)) {
+                postUrl = el2.href;
+                break;
+            }
+        }
+    }
+
+    // Pass 4: construct URL from photo link's "set" param (post ID hidden inside)
+    // Facebook embeds post ID in photo links: /photo/?fbid=X&set=pcb.POSTID or set=gm.POSTID
+    if (!postUrl) {
+        for (const a of el.querySelectorAll('a[href*="/photo/"]')) {
+            const photoHref = a.href || '';
+            const setMatch = photoHref.match(/[?&]set=(?:pcb|gm|pb|g)\.(\d+)/);
+            if (setMatch) {
+                // Extract group ID from any user link in the element
+                const groupLink = el.querySelector('a[href*="/groups/"][href*="/user/"]');
+                if (groupLink) {
+                    const grpMatch = groupLink.href.match(/\/groups\/(\d+)\//);
+                    if (grpMatch) {
+                        postUrl = 'https://www.facebook.com/groups/' + grpMatch[1] + '/posts/' + setMatch[1] + '/';
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     if (postUrl) {
         try {
             const u = new URL(postUrl);
